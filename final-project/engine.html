@@ -1,0 +1,306 @@
+<!--
+    Project Features:
+    * Textures
+    * Music when start button is clicked
+    * Directional lighting with specular highlights and shininess
+    * Skymap implemented with a cubemap. Cubemap renderer and shader are separate
+    * Environment reflections with cubemaps. Reflections are intentionally most visible in specular highlights
+    * Free camera: move forwards and backwards with arrow keys, turn left and right with arrow keys,
+                   click and drag to look around
+    * Animated sunrise: direction and color of directional lighting changes to mimic a sunrise/sunset cycle.
+                   Cubemap tint also changes to match lighting color.
+
+    Sources:
+    * Skybox images from https://learnopengl.com/Advanced-OpenGL/Cubemaps
+    * Music from https://www.epidemicsound.com/track/PsefVL0aA7/
+    * 3D models and textures created independently in Blender
+-->
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>WebGL Music Animation</title>
+</head>
+<body>
+	<canvas width="0" height="0" id="webgl-canvas"></canvas>
+
+    <script src="../common/webgl-debug.js"></script>
+    <script src="../common/math.js"></script>
+    <script src="../common/gl-utils.js"></script>
+    <script src="../common/input.js"></script>
+    <script src="../common/renderloop.js"></script>
+    <script src="../common/camera.js"></script>
+    <script src="../common/grid.js"></script>
+    <script src="../common/objparser.js"></script>
+    <script src="../common/dat.gui.min.js"></script>
+    <script src="../common/stats.min.js"></script>
+
+    <script src="textureRenderer.js"></script>
+    <script src="cubemapRenderer.js"></script>
+    <script src="swayRenderer.js"></script>
+    <script src="modeltransform.js"></script>
+    <script src="primitives.js"></script>
+
+    <script src="howler.js"></script>
+
+    <button id="startbutton" width="300" height="300" onclick="load()" style="
+        background-color: #096e79; border: none; color: white; padding: 50px 50px; text-align: center;
+        text-decoration: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        font-size: 50px;">Start Animation</button>
+
+    <script type="text/javascript">
+        "use strict"; // use strict javascript compiling
+
+        //--------------------------------------------------
+        // Global Cashes
+        //--------------------------------------------------
+        var MeshCache = {}; // here all mesh objects are stored, see GLUtils.createMesh() for details on how a mesh is added.
+        var TextureCache = {}; // here all texture objects are stored, see GLUtils.loadTexture() for details on how a texture is added.
+
+        // -----------------------------------------
+        // Global variables
+        // -----------------------------------------
+        var gl;
+        var canvas;
+        var renderLoop;
+
+        var g_textureRenderer;
+        var g_cubemapRenderer;
+        var g_swayRenderer;
+
+        var g_camera;
+        var g_cameraController;
+
+        //var mushroom;
+        var skybox;
+        var teacup;
+        var table;
+        var teapot;
+
+        var g_grid
+
+        var skyTint = new V3(0, 0, 0);
+        var cubemapShaderData = {tint: skyTint};
+
+        var timer = 0;
+        var pause = false;
+        var pauseTime = 0;
+        var sunDir = 1;
+        var music;
+
+        var g_lightingData = {
+            lightDirX: -1,
+            lightDirY: -1,
+            lightDirZ: -1.89,   // Set right below light direction threshold (see lighting section below)
+            lightColorR: 1.0,
+            lightColorG: 1.0,
+            lightColorB: 1.0,
+            ambientColorR: 0.1,
+            ambientColorG: 0.1,
+            ambientColorB: 0.1
+        }
+
+        // dat.gui to mute/unmute our sound
+        var gui_data = {mute: false};
+        var gui = new dat.GUI({ width: 100 } );
+        gui.add(gui_data, "mute").onChange(function(value){music?.mute(value);});
+
+        function setup(){
+            canvas = document.getElementById("webgl-canvas");
+            gl = GLUtils.createWebGLInstance(canvas, true);
+            gl.clearColor(0.85, 0.95, 0.9, 1); // set clear color (RGBA)
+            gl.fitScreen();
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            Input.initialize(canvas);
+            // our shader files are loaded here. Once completed, init is called
+            // for now there is only the standardShader, but you can add more by
+            // simply adding another path into the array shaderPaths.
+            let shaderPaths = ["shaders/textureShader.glsl", "shaders/cubemapShader.glsl", "shaders/swayShader.glsl"];
+            GLUtils.loadShaders(shaderPaths, init);
+        }
+
+        function init(){
+            g_textureRenderer = new TextureRenderer("textureShader");
+            g_cubemapRenderer = new CubemapRenderer("cubemapShader");
+            g_swayRenderer = new SwayRenderer("swayShader");
+
+            g_camera = new PerspectiveCamera(45, 0.1, 1000, canvas.width / canvas.height);
+            g_cameraController = new OrbiterCameraController(canvas, g_camera, V3.ZERO, 15, 500, 200, 10, -10);
+            g_cameraController.target.set(0,0,0);
+
+            // TODO: Load textures and add to materials
+            //GLUtils.loadTexture("mushroom", "ressources/mushroom-tex.png");
+            GLUtils.loadTexture("teacup", "ressources/teacup-tex.png");
+            GLUtils.loadTexture("teapot", "ressources/teapot-tex.png");
+            GLUtils.loadTexture("wood", "ressources/wood.png");
+
+            // Load cube map skybox
+            GLUtils.loadCubeMap("skyCubeMap", "ressources/skybox/left.jpg", "ressources/skybox/right.jpg", "ressources/skybox/top.jpg", "ressources/skybox/bottom.jpg", "ressources/skybox/back.jpg", "ressources/skybox/front.jpg",);
+                    
+            // Define Materials
+            // let mushroomMat = {tint: new V3(1,1,1), 
+            //                     shininess: 50, specularIntensity: 0.8, mainTexture: "mushroom"};
+            
+            let skyMat = {tint: new V3(1,1,1),
+                            shininess: 20, specularIntensity: 0.8, mainTexture: "skyCubeMap"};
+
+            let woodMat = {tint: new V3(1,1,1),
+                            shininess: 50, specularIntensity: 0.8, mainTexture: "wood"};
+
+            let teacupMat = {tint: new V3(1,1,1),
+                            shininess: 10, specularIntensity: 0.8, mainTexture: "teacup"};
+
+            let teapotMat = {tint: new V3(1,1,1),
+                            shininess: 0.5, specularIntensity: 0.8, mainTexture: "teapot"};
+
+            // Define models
+            skybox = new ModelTransform(Primitives.Cube.getMesh());
+            skybox.scale.set(2,2,2);
+
+            // mushroom = new ModelTransform(OBJLoader.getMesh("mushroom", "ressources/mushroom.obj"), mushroomMat);
+            // mushroom.scale.set(0.1,0.1,0.1);
+
+            teacup = new ModelTransform(OBJLoader.getMesh("teacup", "ressources/teacup.obj"), teacupMat);
+            teacup.scale.set(0.3, 0.3, 0.3);
+            teacup.position.set(2, 0.5, -1);
+            teacup.rotation.set(0, 270, 0);
+
+            table = new ModelTransform(OBJLoader.getMesh("table", "ressources/table.obj"), woodMat);
+            table.rotation.set(0, 90, 0);
+            table.scale.set(2,2,2);
+            table.position.set(0,0,0);
+
+            teapot = new ModelTransform(OBJLoader.getMesh("teapot", "ressources/teapot.obj"), teapotMat);
+            teapot.scale.set(0.75,0.75,0.75);
+            teapot.position.set(-0.5, 1.4, 0.5);
+            teapot.rotation.set(0, -50, 0);
+ 
+            g_grid = new GridAxis();
+
+            // load an play the music using howler.js
+            // https://howlerjs.com/
+            // documentation: https://github.com/goldfire/howler.js#documentation
+            music = new Howl({
+                src: ['ressources/ES_Le Lardon - Traditional.mp3'],
+                html5: true // use streaming audio if possible
+            });
+            music.play();
+
+            renderLoop = new RenderLoop(draw).start();
+        }
+
+        function draw(deltaTime){
+            Input.update();
+
+            // Render skybox
+            drawSkybox()
+
+            let bpm = 120; // the skeleton song has 77 beats per minute
+            let bps = bpm/60.0; // this many beats per second
+            let beatDuration = 1.0/bps; // one beat lasts this long
+
+            timer += deltaTime; // count up timer variable
+            if(timer > beatDuration){ // do stuff every beat
+                timer = Time.time % beatDuration; // we can't simply set it to 0 here, because we will accumulate error.
+                                        // deltaTime is not 100% accurate (eg. with 60 fps 60*deltaTime != 1.00)
+                                        // but maybe 0.98 or 1.01.
+                                        // Since we work with sound and want a consistent event at exact intervals,
+                                        // we have to use the Time.time to decide when to act.
+                let r = Math.random();
+                let g = Math.random();
+                let b = Math.random();
+                gl.clearColor(r, g, b, 1); // set clear color (RGBA)
+            }
+
+            //gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);  // Deactivate color-changing background
+            g_cameraController.update();
+
+            // -------- Update models -------------
+            // scale y by 0.1 up and down bps times a second.
+            // mushroom.scale.y = 0.1 + Math.sin((Time.time * Math.PI * 2) * bps / 4) * 0.01;
+            // mushroom.update();
+   
+            table.update();
+            teacup.update();
+
+            teapot.rotation.x = Math.sin((Time.time * Math.PI * 2) * bps / 16) * 10;
+            teapot.update();
+
+            // ------------------------------------------------------//
+            // ----------------- Travelling light --------------------//
+            // ------------------------------------------------------//
+
+            let lightThreshold = 5;     // NOTE: currently set to never use threshold, only natuarl sin oscillation
+            let lightSpeed = 0.5;
+
+            // Check for pause state
+            if (Math.abs(g_lightingData.lightDirZ > lightThreshold) && (!pause)) {
+                pause = true;
+                pauseTime = Time.time + 10.0;
+                // console.log("End of cycle");
+                // console.log("Current time: " + Time.time + ", pauseTime: " + pauseTime);
+            }
+
+            // Start a new cycle when pause is over
+            if (pause && Time.time > pauseTime) {
+                g_lightingData.lightDirZ = sunDir * lightThreshold;
+                sunDir *= -1;
+                pause = false;
+                // console.log("New sun dir: " + sunDir);
+                // console.log("Begin new cycle");
+            }
+
+            // Move directional light
+            if (!pause) {
+                g_lightingData.lightDirZ = sunDir * Math.sin((Time.time  * Math.PI * lightSpeed) * 0.1) * 2;
+
+                // Change lighting
+                g_lightingData.ambientColorR = Math.abs(Math.sin((Time.time  * Math.PI * lightSpeed) * 0.1) * 2) * 0.3;
+                skyTint.x = 0.5 * g_lightingData.ambientColorR;
+
+                // console.log("Move light, " + sunDir);
+                //console.log("z: " + g_lightingData.lightDirZ);
+                //console.log("BG: " + g_lightingData.lightColorB);
+                //console.log("ambientR: " + g_lightingData.ambientColorR);
+            }
+ 
+            // Update shader data
+            let shaderData = { lightingData: g_lightingData};
+            cubemapShaderData = {tint: skyTint};
+            let swayShaderData = { lightingData: g_lightingData, time: Time.time};
+
+            // Render models
+            let renderer = g_textureRenderer;
+            renderer.drawModel(table, g_camera, shaderData);
+            renderer.drawModel(teacup, g_camera, shaderData);
+            renderer.drawModel(teapot, g_camera, shaderData);
+            // renderer.drawModel(mushroom, g_camera, shaderData);
+            //g_swayRenderer.drawModel(grassTuft1, g_camera, swayShaderData);
+            
+            g_grid.draw(g_camera);
+        }
+
+        // this will be executed when the startbutton is pressed, run the program and delete the button
+        function load(){
+            var button = document.getElementById("startbutton");
+            button.remove();
+            setup();
+        }
+
+        // Draws the skybox before other models in the scene
+        function drawSkybox(){
+            // Disable depth test
+            gl.disable(gl.DEPTH_TEST);
+
+            // Draw skybox
+            skybox.update();
+            g_cubemapRenderer.drawModel(skybox, g_camera, cubemapShaderData);
+
+            // Re-enable depth test
+            gl.enable(gl.DEPTH_TEST);
+        }
+    </script>
+</body>
+</html>
