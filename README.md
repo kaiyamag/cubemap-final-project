@@ -1,6 +1,8 @@
 # cubemap-final-project
 A WebGL project exploring cubemaps, directional lighting, reflection, and animation. This project unites all of the concepts covered in my Computer Graphics course and showcases individual research into skymaps and reflections. Developed from a course template.
 
+<img src="teapot_example.png" alt="Reflective teapot on a table" title="Render Example" width="512"/>
+
 ## Running the Project:
 Download all project files from `common/` and `final-project/` and run `engine.html` with Visual Studio Code Live Server. Click "Start Animation" to render the scene, navigate using the arrow keys and click & drag, and mute music with the button in the upper right corner.
 
